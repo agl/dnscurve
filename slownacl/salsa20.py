@@ -56,7 +56,7 @@ def stream_salsa20(l, n, k):
   n = struct.unpack('<2I', n)
   k = struct.unpack('<8I', k)
   for i in xrange(0, l, 64):
-    output.append(block(i, n, k))
+    output.append(block(i // 64, n, k))
   return ''.join(output)[:l]
 
 def streamxor_salsa20(m, n, k):
