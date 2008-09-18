@@ -1,4 +1,4 @@
-__all__ = ['smult_base_curve25519', 'smult_curve25519']
+__all__ = ['smult_curve25519_base', 'smult_curve25519']
 
 P = 2 ** 255 - 19
 A = 486662
@@ -57,6 +57,6 @@ def smult_curve25519(n, p):
   p = unpack(p)
   return pack(curve25519(n, p))
 
-def smult_base_curve25519(n):
+def smult_curve25519_base(n):
   n = clamp(unpack(n))
   return pack(curve25519(n, 9))

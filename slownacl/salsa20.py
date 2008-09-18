@@ -1,7 +1,7 @@
 import struct
 from util import xor
 
-__all__ = ['stream_salsa20', 'streamxor_salsa20']
+__all__ = ['stream_salsa20', 'stream_salsa20_xor']
 
 def rotate(x, n):
   x &= 0xffffffff
@@ -59,5 +59,5 @@ def stream_salsa20(l, n, k):
     output.append(block(i // 64, n, k))
   return ''.join(output)[:l]
 
-def streamxor_salsa20(m, n, k):
+def stream_salsa20_xor(m, n, k):
   return xor(m, stream_salsa20(len(m), n, k))

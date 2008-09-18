@@ -1,9 +1,9 @@
 from util import xor, randombytes
 from verify import verify16, verify32
-from salsa20 import stream_salsa20, streamxor_salsa20
+from salsa20 import stream_salsa20, stream_salsa20_xor
 from poly1305 import onetimeauth_poly1305, onetimeauth_poly1305_verify
 from hash import hash_sha512, auth_hmacsha512, auth_hmacsha512_verify
-from curve25519 import smult_curve25519, smult_base_curve25519
+from curve25519 import smult_curve25519, smult_curve25519_base
 
 
 def secretbox_salsa20hmacsha512(m, n, k):
