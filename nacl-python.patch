@@ -1,0 +1,674 @@
+Index: nacl-20080914/cpucycles/do
+===================================================================
+--- nacl-20080914.orig/cpucycles/do	2008-09-14 12:42:13.000000000 -0700
++++ nacl-20080914/cpucycles/do	2008-09-18 15:33:22.000000000 -0700
+@@ -38,6 +38,7 @@
+             ./test || continue
+             echo "=== `date` === Success. Using $n.c." >&2
+             mkdir -p lib/$abi
++            mkdir -p lib/$abi-pic
+             mv cpucycles-impl.o lib/$abi/cpucycles.o
+             mkdir -p include/$abi
+             mv cpucycles-impl.h include/$abi/cpucycles.h
+Index: nacl-20080914/do
+===================================================================
+--- nacl-20080914.orig/do	2008-09-14 12:42:13.000000000 -0700
++++ nacl-20080914/do	2008-09-18 15:41:57.000000000 -0700
+@@ -139,6 +139,7 @@
+       rm -rf "$work"
+       mkdir -p "$work"
+       mkdir -p "$work/best"
++      mkdir -p "$work/best-pic"
+ 
+       # for each operation primitive abi, loop over implementations
+       find "$o/$p" -follow -name "api.h" \
+@@ -259,8 +260,23 @@
+ 	    && cp -p "$op.h" "../$op.h" \
+ 	    && cp -p "$o.h" "../$o.h" \
+             && cp -p measure ../best/measure \
++	    && ok=1 \
++	    && for f in $cfiles $sfiles
++	    do
++	      $compiler -fPIC \
++		-I. -I"$include" -I"$include/$abi" \
++		-c "$f" >../errors 2>&1 \
++	      || ok=0
++	    done \
++	    && [ "$ok" = 1 ] \
++	    && rm -f ../best-pic/*.o \
++	    && for f in *.o
++	    do
++	      cp -p "$f" "../best-pic/${opi}-$f"
++	    done \
+ 	    || :
+ 	  done
++
+ 	)
+       done
+ 
+@@ -273,6 +289,11 @@
+       && [ -f "$o/$p/selected" ] \
+       && cp -p "$work/$o.h" "$include/$abi/$o.h" \
+       || :
++
++      # Build shared libraries
++      cp -p "$work/best-pic/"*.o "$lib/$abi-pic" \
++      && linking_cc=$("$bin/okc-$abi" | head -n 1) \
++      && $linking_cc -o "$lib/$abi-pic/libnacl.so" -shared "$lib/$abi-pic"/*.o
+     done
+   done
+ done
+Index: nacl-20080914/crypto_smult/curve25519/donna/smult.c
+===================================================================
+--- nacl-20080914.orig/crypto_smult/curve25519/donna/smult.c	2008-09-14 12:42:13.000000000 -0700
++++ nacl-20080914/crypto_smult/curve25519/donna/smult.c	2008-09-18 15:33:22.000000000 -0700
+@@ -77,7 +77,7 @@
+  *   xprime zprime: short form, destroyed
+  *   qmqp: short form, preserved
+  */
+-void
++void __attribute__((visibility ("hidden")))
+ fmonty(felem *x2,  /* output 2Q */
+        felem *x3,  /* output Q + Q' */
+        felem *x,    /* input Q */
+Index: nacl-20080914/bindings/python/generate.sh
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ nacl-20080914/bindings/python/generate.sh	2008-09-18 16:04:17.000000000 -0700
+@@ -0,0 +1,11 @@
++echo -n > methods.h
++echo -n > includes.h
++
++for family in hash auth auth1 stream secretbox smult box; do
++  for x in `ls -1 /usr/include/nacl/crypto_${family}_*.h`; do
++    func=$(basename $x | sed -e "s/crypto_$family\([_a-zA-Z0-9]*\).h/\1/")
++    func=${func:1}
++    echo "#include <nacl/crypto_${family}_$func.h>" >> includes.h
++    echo "function_${family}($func)" >> methods.h
++  done
++done
+Index: nacl-20080914/bindings/python/nacl.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ nacl-20080914/bindings/python/nacl.c	2008-09-18 16:23:28.000000000 -0700
+@@ -0,0 +1,159 @@
++#include <stdint.h>
++
++#include <sys/types.h>
++#include <unistd.h>
++#include <fcntl.h>
++
++#include <Python.h>
++
++#include <nacl/crypto_verify_16.h>
++#include <nacl/crypto_verify_32.h>
++
++#include "includes.h"
++#include "templates.h"
++
++#include <nacl/crypto_hash.h>
++//#include <nacl/crypto_auth.h>
++//#include <nacl/crypto_onetimeauth.h>
++#include <nacl/crypto_stream.h>
++#include <nacl/randombytes.h>
++
++typedef uint8_t u8;
++
++int global_urandom_fd;
++
++void
++randombytes(unsigned char *x, unsigned long long xlen) {
++  int i;
++
++  while (xlen > 0) {
++    if (xlen < 1048576) i = xlen; else i = 1048576;
++
++    i = read(global_urandom_fd, x, i);
++    if (i < 1) {
++      sleep(1);
++      continue;
++    }
++
++    x += i;
++    xlen -= i;
++  }
++}
++
++static void __attribute__((constructor))
++randombytes_init() {
++  global_urandom_fd = open("/dev/urandom", O_RDONLY);
++  if (global_urandom_fd < 0) {
++    perror("opening /dev/urandom");
++    abort();
++  }
++}
++
++static PyObject *
++nacl_verify_16(PyObject *self, PyObject *args) {
++  PyStringObject *sa, *sb;
++  if (!PyArg_ParseTuple(args, "SS", &sa, &sb)) return NULL;
++
++  if (PyString_Size((PyObject *) sa) != 16 ||
++      PyString_Size((PyObject *) sb) != 16) {
++      PyErr_SetString(PyExc_ValueError,
++                      "Both arguments to verify16 must be 16 bytes long");
++      return NULL;
++  }
++
++  const char *a = PyString_AS_STRING(sa);
++  const char *b = PyString_AS_STRING(sb);
++
++  if (!crypto_verify_16((u8 *) a, (u8 *) b)) {
++    Py_RETURN_TRUE;
++  } else {
++    Py_RETURN_FALSE;
++  }
++}
++
++static PyObject *
++nacl_verify_32(PyObject *self, PyObject *args) {
++  PyStringObject *sa, *sb;
++  if (!PyArg_ParseTuple(args, "SS", &sa, &sb)) return NULL;
++
++  if (PyString_Size((PyObject *) sa) != 32 ||
++      PyString_Size((PyObject *) sb) != 32) {
++      PyErr_SetString(PyExc_ValueError,
++                      "Both arguments to verify32 must be 32 bytes long");
++      return NULL;
++  }
++
++  const char *a = PyString_AS_STRING(sa);
++  const char *b = PyString_AS_STRING(sb);
++
++  if (!crypto_verify_32((u8 *) a, (u8 *) b)) {
++    Py_RETURN_TRUE;
++  } else {
++    Py_RETURN_FALSE;
++  }
++}
++
++#define function_auth1(x)  // not wrapped yet
++
++#define function_hash(x) HASHFUNC(_##x)
++#define function_auth(x) AUTHFUNC(,_##x)
++#define function_onetimeauth(x) AUTHFUNC(onetime,_##x)
++#define function_stream(x) STREAMXORFUNC(_##x)
++#define function_secretbox(x) SECRETBOXFUNC(_##x)
++#define function_smult(x) SMULTFUNC(_##x)
++#define function_box(x) BOXFUNC(_##x)
++#include "methods.h"
++#undef function_box
++#undef function_smult
++#undef function_secretbox
++#undef function_stream
++#undef function_onetimeauth
++#undef function_auth
++#undef function_hash
++
++// Default implementations
++HASHFUNC()
++//AUTHFUNC(,)
++//AUTHFUNC(onetime,)
++STREAMXORFUNC()
++
++static PyMethodDef NaClMethods[] = {
++  {"verify16",  nacl_verify_16, METH_VARARGS, "Verify two 16-byte strings are equal"},
++  {"verify32",  nacl_verify_32, METH_VARARGS, "Verify two 32-byte strings are equal"},
++#define function_hash(x) \
++  {"hash_" #x, nacl_hash_##x, METH_VARARGS, "Hash a string with " #x},
++#define function_auth(x) \
++  {"auth_" #x, nacl_auth_##x, METH_VARARGS, "Authenticate a string with " #x},
++#define function_onetimeauth(x) \
++  {"onetimeauth_" #x, nacl_onetimeauth_##x, METH_VARARGS, "Authenticate a string with " #x},
++#define function_stream(x) \
++  {"stream_" #x "_xor", nacl_stream_##x##_xor, METH_VARARGS, "Encrypt a string with " #x},
++#define function_secretbox(x) \
++  {"secretbox_" #x, nacl_secretbox_##x, METH_VARARGS, "Protect a string with " #x},
++#define function_smult(x) \
++  {"smult_" #x, nacl_smult_##x, METH_VARARGS, "Scalar multiplication with " #x}, \
++  {"smult_" #x "_base", nacl_smult_##x##_base, METH_VARARGS, "Scalar multiplication with " #x},
++#define function_box(x) \
++  {"box_" #x, nacl_box_##x, METH_VARARGS, "Build a cryptographic box using " #x}, \
++  {"box_" #x "_open", nacl_box_##x##_open, METH_VARARGS, "Open a cryptographic box using " #x}, \
++  {"box_" #x "_keypair", nacl_box_##x##_keypair, METH_VARARGS, "Generate a public/private keypair " #x},
++#include "methods.h"
++#undef function_box
++#undef function_smult
++#undef function_secretbox
++#undef function_stream
++#undef function_onetimeauth
++#undef function_auth
++#undef function_hash
++  {"hash", nacl_hash, METH_VARARGS, "Hash a string"},
++  //{"auth", nacl_auth, METH_VARARGS, "Authenticate a string"},
++  //{"onetimeauth", nacl_onetimeauth, METH_VARARGS, "Authenticate a string"},
++  {"stream_xor", nacl_stream_xor, METH_VARARGS, "Encrypt a string"},
++
++  {NULL, NULL, 0, NULL}
++};
++
++PyMODINIT_FUNC
++initnacl(void) {
++    (void) Py_InitModule("nacl", NaClMethods);
++}
+Index: nacl-20080914/bindings/python/setup.py
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ nacl-20080914/bindings/python/setup.py	2008-09-18 15:33:22.000000000 -0700
+@@ -0,0 +1,10 @@
++from distutils.core import setup, Extension
++
++naclmod = Extension('nacl',
++                    sources = ['nacl.c'],
++                    libraries = ['nacl'])
++
++setup (name = 'NaCl',
++       version = '0.1',
++       description = 'A wrapping of the NaCl crypto library',
++       ext_modules = [naclmod])
+Index: nacl-20080914/bindings/python/templates.h
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ nacl-20080914/bindings/python/templates.h	2008-09-18 16:22:23.000000000 -0700
+@@ -0,0 +1,337 @@
++#ifndef NACL_PY_TEMPLATES_H
++#define NACL_PY_TEMPLATES_H
++
++#define HASHFUNC(x) \
++static PyObject * \
++nacl_hash##x(PyObject *self, PyObject *args) { \
++  PyStringObject *a; \
++  u8 digest[crypto_hash##x##_BYTES]; \
++\
++  if (!PyArg_ParseTuple(args, "S", &a)) return NULL; \
++  const unsigned long long a_len = PyString_Size((PyObject *) a); \
++  const char *abytes = PyString_AS_STRING((PyObject *) a); \
++\
++  crypto_hash##x(digest, (const u8 *) abytes, a_len); \
++  return PyString_FromStringAndSize((const char *) digest, sizeof(digest)); \
++}
++
++#define AUTHFUNC(type, x) \
++static PyObject * \
++nacl_##type##auth##x(PyObject *self, PyObject *args) { \
++  PyStringObject *a, *key; \
++  u8 digest[crypto_##type##auth##x##_BYTES]; \
++ \
++  if (!PyArg_ParseTuple(args, "SS", &a, &key)) return NULL; \
++ \
++  if (PyString_Size((PyObject *) key) != crypto_##type##auth##x##_KEYBYTES) { \
++      PyErr_Format(PyExc_ValueError, \
++                   "Key must be %d bytes long", \
++                   crypto_##type##auth##x##_KEYBYTES); \
++      return NULL; \
++  } \
++ \
++  const char *keybytes = PyString_AS_STRING((PyObject *) key); \
++  const unsigned long long a_len = PyString_Size((PyObject *) a); \
++  const char *abytes = PyString_AS_STRING((PyObject *) a); \
++ \
++  crypto_##type##auth##x(digest, (const u8 *) abytes, a_len, (u8 *) keybytes); \
++  return PyString_FromStringAndSize((const char *) digest, sizeof(digest)); \
++}
++
++#define STREAMXORFUNC(x) \
++static PyObject * \
++nacl_stream##x##_xor(PyObject *self, PyObject *args) { \
++  PyStringObject *a, *key, *nonce; \
++  u8 *output; \
++\
++  if (!PyArg_ParseTuple(args, "SSS", &a, &nonce, &key)) return NULL; \
++\
++  if (PyString_Size((PyObject *) key) != crypto_stream##x##_KEYBYTES) { \
++    PyErr_Format(PyExc_ValueError, \
++                 "Key must be %d bytes long", \
++                 crypto_stream##x##_KEYBYTES); \
++    return NULL; \
++  } \
++\
++  if (PyString_Size((PyObject *) nonce) != crypto_stream##x##_NONCEBYTES) { \
++    PyErr_Format(PyExc_ValueError, \
++                 "Nonce must be %d bytes long", \
++                 crypto_stream##x##_NONCEBYTES); \
++    return NULL; \
++  } \
++\
++  const char *k = PyString_AS_STRING(key); \
++  const char *n = PyString_AS_STRING(nonce); \
++  const unsigned long long a_len = PyString_Size((PyObject *) a); \
++  const char *abytes = PyString_AS_STRING((PyObject *) a); \
++\
++  if (posix_memalign((void **) &output, 16, a_len)) { \
++    PyErr_NoMemory(); \
++    return NULL; \
++  } \
++\
++  crypto_stream##x##_xor(output, (const u8 *) abytes, a_len, (const u8 *) n, \
++                       (const u8 *) k); \
++  PyObject *ret = PyString_FromStringAndSize((const char *) output, a_len); \
++  free(output); \
++  return ret; \
++}
++
++#define SECRETBOXFUNC(x) \
++static PyObject * \
++nacl_secretbox##x(PyObject *self, PyObject *args) { \
++  PyStringObject *a, *key, *nonce; \
++  u8 *output, *input; \
++\
++  if (!PyArg_ParseTuple(args, "SSS", &a, &nonce, &key)) return NULL; \
++\
++  if (PyString_Size((PyObject *) key) != crypto_secretbox##x##_KEYBYTES) { \
++    PyErr_Format(PyExc_ValueError, \
++                 "Key must be %d bytes long", \
++                 crypto_secretbox##x##_KEYBYTES); \
++    return NULL; \
++  } \
++\
++  if (PyString_Size((PyObject *) nonce) != crypto_secretbox##x##_NONCEBYTES) { \
++    PyErr_Format(PyExc_ValueError, \
++                 "Nonce must be %d bytes long", \
++                 crypto_secretbox##x##_NONCEBYTES); \
++    return NULL; \
++  } \
++\
++  const char *k = PyString_AS_STRING(key); \
++  const char *n = PyString_AS_STRING(nonce); \
++  const unsigned long long a_len = PyString_Size((PyObject *) a); \
++  const char *abytes = PyString_AS_STRING((PyObject *) a); \
++\
++  if (posix_memalign((void **) &output, 16, a_len + \
++                                            crypto_secretbox##x##_ZEROBYTES)) { \
++    PyErr_NoMemory(); \
++    return NULL; \
++  } \
++\
++  if (posix_memalign((void **) &input, 16, a_len + \
++                                            crypto_secretbox##x##_ZEROBYTES)) { \
++    free(output); \
++    PyErr_NoMemory(); \
++    return NULL; \
++  } \
++  memcpy(input + crypto_secretbox##x##_ZEROBYTES, abytes, a_len); \
++  memset(input, 0, crypto_secretbox##x##_ZEROBYTES); \
++\
++  crypto_secretbox##x(output, input, a_len + crypto_secretbox##x##_ZEROBYTES, \
++                      (const u8 *) n, (const u8 *) k); \
++  free(input); \
++  PyObject *ret = \
++    PyString_FromStringAndSize((const char *) output + crypto_secretbox##x##_BOXZEROBYTES, \
++                               a_len + crypto_secretbox##x##_ZEROBYTES - crypto_secretbox##x##_BOXZEROBYTES); \
++  free(output); \
++  return ret; \
++}
++
++#define SMULTFUNC(x) \
++static PyObject * \
++nacl_smult##x(PyObject *self, PyObject *args) { \
++  PyStringObject *a, *b; \
++ \
++  if (!PyArg_ParseTuple(args, "SS", &a, &b)) return NULL; \
++ \
++  if (PyString_Size((PyObject *) a) != crypto_smult##x##_SCALARBYTES) { \
++    PyErr_Format(PyExc_ValueError, \
++                 "Scalar value must be %d bytes long", \
++                 crypto_smult##x##_SCALARBYTES); \
++    return NULL; \
++  } \
++ \
++  if (PyString_Size((PyObject *) b) != crypto_smult##x##_BYTES) { \
++    PyErr_Format(PyExc_ValueError, \
++                 "Group element must be %d bytes long", \
++                 crypto_smult##x##_BYTES); \
++    return NULL; \
++  } \
++ \
++  const char *abytes = PyString_AS_STRING((PyObject *) a); \
++  const char *bbytes = PyString_AS_STRING((PyObject *) b); \
++  unsigned char result[crypto_smult##x##_BYTES]; \
++ \
++  crypto_smult##x(result, (const u8 *) abytes, (const u8 *) bbytes); \
++  PyObject *ret = PyString_FromStringAndSize((const char *) result, \
++                                             crypto_smult##x##_BYTES); \
++ \
++  return ret; \
++} \
++\
++static PyObject * \
++nacl_smult##x##_base(PyObject *self, PyObject *args) { \
++  PyStringObject *a; \
++ \
++  if (!PyArg_ParseTuple(args, "S", &a)) return NULL; \
++ \
++  if (PyString_Size((PyObject *) a) != crypto_smult##x##_SCALARBYTES) { \
++    PyErr_Format(PyExc_ValueError, \
++                 "Scalar value must be %d bytes long", \
++                 crypto_smult##x##_SCALARBYTES); \
++    return NULL; \
++  } \
++ \
++  const char *abytes = PyString_AS_STRING((PyObject *) a); \
++  unsigned char result[crypto_smult##x##_BYTES]; \
++ \
++  crypto_smult##x##_base(result, (const u8 *) abytes); \
++  PyObject *ret = PyString_FromStringAndSize((const char *) result, \
++                                             crypto_smult##x##_BYTES); \
++ \
++  return ret; \
++}
++
++#define BOXFUNC(x) \
++static PyObject * \
++nacl_box##x##_keypair(PyObject *self, PyObject *args) { \
++  if (!PyArg_ParseTuple(args, "")) return NULL; \
++\
++  uint8_t pk[crypto_box##x##_PUBLICKEYBYTES]; \
++  uint8_t sk[crypto_box##x##_PUBLICKEYBYTES]; \
++\
++  crypto_box##x##_keypair(pk, sk); \
++\
++  PyObject *a = PyString_FromStringAndSize((const char *) pk, sizeof(pk)); \
++  if (!a) \
++    return NULL; \
++  PyObject *b = PyString_FromStringAndSize((const char *) sk, sizeof(sk)); \
++  if (!b) { \
++    Py_DECREF(a); \
++    return NULL; \
++  } \
++\
++  return PyTuple_Pack(2, a, b); \
++} \
++\
++static PyObject * \
++nacl_box##x(PyObject *self, PyObject *args) { \
++  PyStringObject *m, *nonce, *pk, *sk; \
++\
++  if (!PyArg_ParseTuple(args, "SSSS", &m, &nonce, &pk, &sk)) return NULL; \
++\
++  if (PyString_Size((PyObject *) pk) != crypto_box##x##_PUBLICKEYBYTES) { \
++    PyErr_Format(PyExc_ValueError, \
++                 "Public key value must be %d bytes long", \
++                 crypto_box##x##_PUBLICKEYBYTES); \
++    return NULL; \
++  } \
++\
++  if (PyString_Size((PyObject *) sk) != crypto_box##x##_SECRETKEYBYTES) { \
++    PyErr_Format(PyExc_ValueError, \
++                 "Secret key value must be %d bytes long", \
++                 crypto_box##x##_SECRETKEYBYTES); \
++    return NULL; \
++  } \
++\
++  if (PyString_Size((PyObject *) nonce) != crypto_box##x##_NONCEBYTES) { \
++    PyErr_Format(PyExc_ValueError, \
++                 "Nonce value must be %d bytes long", \
++                 crypto_box##x##_NONCEBYTES); \
++    return NULL; \
++  } \
++\
++  const char *pkbytes = PyString_AS_STRING(pk); \
++  const char *skbytes = PyString_AS_STRING(sk); \
++  const char *noncebytes = PyString_AS_STRING(nonce); \
++  const unsigned long long m_len = PyString_Size((PyObject *) m); \
++  const char *mbytes = PyString_AS_STRING((PyObject *) m); \
++\
++  u8 *output, *input; \
++\
++  if (posix_memalign((void **) &output, 16, \
++                     m_len + crypto_box##x##_ZEROBYTES)) { \
++    PyErr_NoMemory(); \
++    return NULL; \
++  } \
++\
++  if (posix_memalign((void **) &input, 16, \
++                     m_len + crypto_box##x##_ZEROBYTES)) { \
++    free(output); \
++    PyErr_NoMemory(); \
++    return NULL; \
++  } \
++  memcpy(input + crypto_box##x##_ZEROBYTES, mbytes, m_len); \
++  memset(input, 0, crypto_box##x##_ZEROBYTES); \
++\
++  crypto_box##x(output, input, m_len + crypto_box##x##_ZEROBYTES, (uint8_t *) noncebytes, \
++                (uint8_t *) pkbytes, (uint8_t *) skbytes); \
++  free(input); \
++\
++  PyObject *ret = \
++    PyString_FromStringAndSize((const char *) output + crypto_box##x##_BOXZEROBYTES, \
++                               m_len + crypto_box##x##_ZEROBYTES - crypto_box##x##_BOXZEROBYTES); \
++  free(output); \
++  return ret; \
++} \
++\
++static PyObject * \
++nacl_box##x##_open(PyObject *self, PyObject *args) { \
++  PyStringObject *m, *nonce, *pk, *sk; \
++\
++  if (!PyArg_ParseTuple(args, "SSSS", &m, &nonce, &pk, &sk)) return NULL; \
++\
++  if (PyString_Size((PyObject *) pk) != crypto_box##x##_PUBLICKEYBYTES) { \
++    PyErr_Format(PyExc_ValueError, \
++                 "Public key value must be %d bytes long", \
++                 crypto_box##x##_PUBLICKEYBYTES); \
++    return NULL; \
++  } \
++\
++  if (PyString_Size((PyObject *) sk) != crypto_box##x##_SECRETKEYBYTES) { \
++    PyErr_Format(PyExc_ValueError, \
++                 "Secret key value must be %d bytes long", \
++                 crypto_box##x##_SECRETKEYBYTES); \
++    return NULL; \
++  } \
++\
++  if (PyString_Size((PyObject *) nonce) != crypto_box##x##_NONCEBYTES) { \
++    PyErr_Format(PyExc_ValueError, \
++                 "Nonce value must be %d bytes long", \
++                 crypto_box##x##_NONCEBYTES); \
++    return NULL; \
++  } \
++\
++  const char *pkbytes = PyString_AS_STRING(pk); \
++  const char *skbytes = PyString_AS_STRING(sk); \
++  const char *noncebytes = PyString_AS_STRING(nonce); \
++  const unsigned long long m_len = PyString_Size((PyObject *) m); \
++  const char *mbytes = PyString_AS_STRING((PyObject *) m); \
++\
++  u8 *output, *input; \
++\
++  if (posix_memalign((void **) &output, 16, \
++                     m_len + crypto_box##x##_BOXZEROBYTES)) { \
++    PyErr_NoMemory(); \
++    return NULL; \
++  } \
++\
++  if (posix_memalign((void **) &input, 16, \
++                     m_len + crypto_box##x##_BOXZEROBYTES)) { \
++    free(output); \
++    PyErr_NoMemory(); \
++    return NULL; \
++  } \
++  memcpy(input + crypto_box##x##_BOXZEROBYTES, mbytes, m_len); \
++  memset(input, 0, crypto_box##x##_BOXZEROBYTES); \
++\
++  if (crypto_box##x##_open(output, input, m_len + crypto_box##x##_BOXZEROBYTES, \
++                           (uint8_t *) noncebytes, \
++                           (uint8_t *) pkbytes, (uint8_t *) skbytes) == -1) { \
++    free(output); \
++    free(input); \
++    PyErr_Format(PyExc_ValueError, "Box contents corrupt"); \
++    return NULL; \
++  }\
++  free(input); \
++\
++  PyObject *ret = \
++    PyString_FromStringAndSize((const char *) output + crypto_box##x##_ZEROBYTES, \
++                               m_len + crypto_box##x##_BOXZEROBYTES - crypto_box##x##_ZEROBYTES); \
++  free(output); \
++  return ret; \
++}
++
++#endif  // NACL_PY_TEMPLATES_H
+Index: nacl-20080914/crypto_auth1/poly1305/amd64/constants.s
+===================================================================
+--- nacl-20080914.orig/crypto_auth1/poly1305/amd64/constants.s	2008-09-18 15:54:57.000000000 -0700
++++ nacl-20080914/crypto_auth1/poly1305/amd64/constants.s	2008-09-18 15:57:47.000000000 -0700
+@@ -27,6 +27,27 @@
+ .globl crypto_auth1_poly1305_amd64_hoffset3
+ .globl crypto_auth1_poly1305_amd64_rounding
+ 
++.hidden _crypto_auth1_poly1305_amd64_constants
++.hidden crypto_auth1_poly1305_amd64_constants
++.hidden crypto_auth1_poly1305_amd64_scale
++.hidden crypto_auth1_poly1305_amd64_two32
++.hidden crypto_auth1_poly1305_amd64_two64
++.hidden crypto_auth1_poly1305_amd64_two96
++.hidden crypto_auth1_poly1305_amd64_alpha32
++.hidden crypto_auth1_poly1305_amd64_alpha64
++.hidden crypto_auth1_poly1305_amd64_alpha96
++.hidden crypto_auth1_poly1305_amd64_alpha130
++.hidden crypto_auth1_poly1305_amd64_doffset0
++.hidden crypto_auth1_poly1305_amd64_doffset1
++.hidden crypto_auth1_poly1305_amd64_doffset2
++.hidden crypto_auth1_poly1305_amd64_doffset3
++.hidden crypto_auth1_poly1305_amd64_doffset3minustwo128
++.hidden crypto_auth1_poly1305_amd64_hoffset0
++.hidden crypto_auth1_poly1305_amd64_hoffset1
++.hidden crypto_auth1_poly1305_amd64_hoffset2
++.hidden crypto_auth1_poly1305_amd64_hoffset3
++.hidden crypto_auth1_poly1305_amd64_rounding
++
+ _crypto_auth1_poly1305_amd64_constants:
+ crypto_auth1_poly1305_amd64_constants:
+ crypto_auth1_poly1305_amd64_scale:
+Index: nacl-20080914/crypto_auth1/poly1305/x86/constants.s
+===================================================================
+--- nacl-20080914.orig/crypto_auth1/poly1305/x86/constants.s	2008-09-18 16:01:51.000000000 -0700
++++ nacl-20080914/crypto_auth1/poly1305/x86/constants.s	2008-09-18 16:02:09.000000000 -0700
+@@ -27,6 +27,27 @@
+ .globl crypto_auth1_poly1305_x86_hoffset3
+ .globl crypto_auth1_poly1305_x86_rounding
+ 
++.hidden _crypto_auth1_poly1305_x86_constants
++.hidden crypto_auth1_poly1305_x86_constants
++.hidden crypto_auth1_poly1305_x86_scale
++.hidden crypto_auth1_poly1305_x86_two32
++.hidden crypto_auth1_poly1305_x86_two64
++.hidden crypto_auth1_poly1305_x86_two96
++.hidden crypto_auth1_poly1305_x86_alpha32
++.hidden crypto_auth1_poly1305_x86_alpha64
++.hidden crypto_auth1_poly1305_x86_alpha96
++.hidden crypto_auth1_poly1305_x86_alpha130
++.hidden crypto_auth1_poly1305_x86_doffset0
++.hidden crypto_auth1_poly1305_x86_doffset1
++.hidden crypto_auth1_poly1305_x86_doffset2
++.hidden crypto_auth1_poly1305_x86_doffset3
++.hidden crypto_auth1_poly1305_x86_doffset3minustwo128
++.hidden crypto_auth1_poly1305_x86_hoffset0
++.hidden crypto_auth1_poly1305_x86_hoffset1
++.hidden crypto_auth1_poly1305_x86_hoffset2
++.hidden crypto_auth1_poly1305_x86_hoffset3
++.hidden crypto_auth1_poly1305_x86_rounding
++
+ _crypto_auth1_poly1305_x86_constants:
+ crypto_auth1_poly1305_x86_constants:
+ crypto_auth1_poly1305_x86_scale:
