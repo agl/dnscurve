@@ -19,16 +19,28 @@ def check_funcs(its, a, b, arglens):
 
   for i in range(its):
     args = [r(x) for x in arglens]
-    assert a(*args) == b(*args)
+    if a(*args) != b(*args):
+      print
+      print
+      print 'failed after %d tests. Failing input:' % i
+      print args
+      print
+      print repr(a(*args))
+      print repr(b(*args))
+      return False
+
+  return True
 
 def check(its, name, arglens):
   print ('Checking %s...' % name),
-  check_funcs(its, getattr(nacl, name), getattr(slownacl, name), arglens)
-  print 'ok'
+  if check_funcs(its, getattr(nacl, name), getattr(slownacl, name), arglens):
+    print 'ok'
+  else:
+    print 'FAILED'
 
 if __name__ == '__main__':
   check(1024, 'hash_sha512', [(1, 100)])
   check(1024, 'auth_hmacsha512', [(1, 100), 32])
-  check(64, 'smult_base_curve25519', [32])
-  #check(64, 'smult_curve25519', [32, 32])
-  #check(128, 'streamxor_salsa20', [(0, 1024), 8, 32])
+  check(256, 'smult_base_curve25519', [32])
+  check(128, 'streamxor_salsa20', [(0, 1024), 8, 32])
+  check(64, 'smult_curve25519', [32, 32])
