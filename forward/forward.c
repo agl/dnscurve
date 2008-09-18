@@ -43,6 +43,7 @@ struct txidentry {
   uint32_t source_ip;
   uint16_t source_port;
   uint16_t source_txid;
+  uint16_t target_txid;
 
   char is_dnscurve;
 
@@ -214,7 +215,8 @@ dns_transmit(const uint8_t *packet, unsigned len, unsigned extra) {
 // -----------------------------------------------------------------------------
 static void
 dns_forward(const uint8_t *packet, unsigned length, int efd,
-            const struct sockaddr_in *sin, char is_dnscurve,
+            const struct sockaddr_in *sin, uint16_t txid,
+            char is_dnscurve,
             const uint8_t *public_key, const uint8_t *nonce,
             const uint8_t *qname, unsigned qnamelen) {
   if (length < 16)
@@ -243,7 +245,8 @@ dns_forward(const uint8_t *packet, unsigned length, int efd,
 
   entry->source_port = sin->sin_port;
   entry->source_ip = sin->sin_addr.s_addr;
-  entry->source_txid = *((uint16_t *) packet);
+  entry->source_txid = txid;
+  entry->target_txid = *((uint16_t *) packet);
   entry->tx_time = time_now();
 
   entry->to_prev = NULL;
@@ -431,19 +434,25 @@ curve_worker() {
           continue;
         }
 
+        if (n < 2) {
+          // packet is too short
+          continue;
+        }
+
+        const uint16_t txid = *((uint16_t *) buffer);
         plaintextlen = sizeof(plaintext);
         int cr;
         cr = dns_curve_request_parse(plaintext, &plaintextlen, public_key,
                                      nonce, &qname, &qnamelen, buffer, n);
         if (cr == 0) {
           // not a DNS curve packet. Forward directly
-          dns_forward(buffer, n, efd, &sin, 0, NULL, NULL, NULL, 0);
+          dns_forward(buffer, n, efd, &sin, txid, 0, NULL, NULL, NULL, 0);
         } else if (cr == -1) {
           // invalid DNS curve packet. Drop
         } else {
           // valid DNS curve packet, inner packet in plaintext
-          dns_forward(plaintext, plaintextlen, efd, &sin, 1, public_key, nonce,
-                      qname, qnamelen);
+          dns_forward(plaintext, plaintextlen, efd, &sin, txid, 1, public_key,
+                      nonce, qname, qnamelen);
         }
       } else {
         // this is a socket talking to our server
@@ -463,7 +472,7 @@ curve_worker() {
         if (sin.sin_addr.s_addr != global_target_address ||
             sin.sin_port != htons(53) ||
             n < 2 ||
-            *((uint16_t *) (buffer + 8)) != entry->source_txid)
+            *((uint16_t *) (buffer + 8)) != entry->target_txid)
           continue;  // bogus packet
 
         dns_reply(buffer + 8, n, entry);
