@@ -1,6 +1,8 @@
 import struct
 from util import xor
 
+__all__ = ['stream_salsa20', 'streamxor_salsa20']
+
 def rotate(x, n):
   x &= 0xffffffff
   return ((x << n) | (x >> (32 - n))) & 0xffffffff
@@ -49,7 +51,7 @@ def block(i, n, k):
   rounds(s, 20)
   return struct.pack('<16I', *s)
 
-def crypto_stream_salsa20(l, n, k):
+def stream_salsa20(l, n, k):
   output = []
   n = struct.unpack('<2I', n)
   k = struct.unpack('<8I', k)
@@ -57,5 +59,5 @@ def crypto_stream_salsa20(l, n, k):
     output.append(block(i, n, k))
   return ''.join(output)[:l]
 
-def crypto_stream_salsa20_xor(m, n, k):
-  return xor(m, crypto_stream_salsa20(len(m), n, k))
+def streamxor_salsa20(m, n, k):
+  return xor(m, stream_salsa20(len(m), n, k))

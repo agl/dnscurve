@@ -1,3 +1,5 @@
+__all__ = ['smult_base_curve25519', 'smult_curve25519']
+
 P = 2 ** 255 - 19
 A = 486662
 
@@ -50,11 +52,11 @@ def clamp(n):
   n |= 64 << 8 * 31
   return n
 
-def crypto_smult_curve25519(n, p):
+def smult_curve25519(n, p):
   n = clamp(unpack(n))
   p = unpack(p)
   return pack(curve25519(n, p))
 
-def crypto_smult_curve25519_base(n):
+def smult_base_curve25519(n):
   n = clamp(unpack(n))
   return pack(curve25519(n, 9))

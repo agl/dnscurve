@@ -1,4 +1,6 @@
-from verify import crypto_verify_16
+from verify import verify16
+
+__all__ = ['onetimeauth_poly1305', 'onetimeauth_poly1305_verify']
 
 P = 2 ** 130 - 5
 
@@ -11,7 +13,7 @@ def unpack(s):
 def pack(n):
   return ''.join([chr(n >> 8 * i & 255) for i in range(16)])
 
-def crypto_onetimeauth_poly1305(m, kr):
+def onetimeauth_poly1305(m, kr):
   if len(kr) != 32: raise ValueError('Invalid Poly1305 key')
   k = unpack(kr[:16])
   r = unpack(kr[16:])
@@ -24,5 +26,5 @@ def crypto_onetimeauth_poly1305(m, kr):
 
   return pack(h)
 
-def crypto_onetimeauth_poly1305_verify(a, m, k):
-  return crypto_verify_16(a, crypto_onetimeauth_poly1305(m, k))
+def onetimeauth_poly1305_verify(a, m, k):
+  return verify16(a, onetimeauth_poly1305(m, k))

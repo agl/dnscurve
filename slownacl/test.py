@@ -1,0 +1,34 @@
+# This is not part of the slownacl library, it's just a unittest to verify a
+# few things against the Python wrapping of NaCl.
+
+import slownacl
+import nacl
+import random
+
+def check_funcs(its, a, b, arglens):
+  '''Checks that two functions are a same by calling each with random strings
+     where the lengths of the random strings are given in @arglens (list of
+     int). The entries of @arglens may also be a range tuple'''
+
+  def r(x):
+    if type(x) == int:
+      return slownacl.randombytes(x)
+    elif type(x) == tuple:
+      length = random.randint(*x)
+      return slownacl.randombytes(length)
+
+  for i in range(its):
+    args = [r(x) for x in arglens]
+    assert a(*args) == b(*args)
+
+def check(its, name, arglens):
+  print ('Checking %s...' % name),
+  check_funcs(its, getattr(nacl, name), getattr(slownacl, name), arglens)
+  print 'ok'
+
+if __name__ == '__main__':
+  check(1024, 'hash_sha512', [(1, 100)])
+  check(1024, 'auth_hmacsha512', [(1, 100), 32])
+  check(64, 'smult_base_curve25519', [32])
+  #check(64, 'smult_curve25519', [32, 32])
+  #check(128, 'streamxor_salsa20', [(0, 1024), 8, 32])
